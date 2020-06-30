@@ -1,17 +1,15 @@
 /* Copyright 2017 The TensorFlow Authors. All Rights Reserved.
-
  Licensed under the Apache License, Version 2.0 (the "License");
  you may not use this file except in compliance with the License.
  You may obtain a copy of the License at
-
  http://www.apache.org/licenses/LICENSE-2.0
-
  Unless required by applicable law or agreed to in writing, software
  distributed under the License is distributed on an "AS IS" BASIS,
  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  See the License for the specific language governing permissions and
  limitations under the License.
  ==============================================================================*/
+
 
 #include <assert.h>
 #include <fcntl.h>
@@ -27,11 +25,18 @@
 #include <set>
 #include <vector>
 
+#include <dirent.h>
+//#include <sys/stat.h>
+#include <fstream>
+#include <string.h>
+
+
 #include "wav_io.h"
 
 class MemMappedFile {
  public:
   MemMappedFile(const std::string& filename) {
+    //std::cout<<"For file = "<<filename;
     const char* c_filename = filename.c_str();
     struct stat st;
     stat(c_filename, &st);
@@ -86,6 +91,7 @@ void TrimToLoudestSegment(const std::vector<float>& input,
   output->resize(desired_samples);
   std::copy(input.begin() + loudest_start_index,
             input.begin() + loudest_end_index, output->begin());
+  //std::cout<<"start = "<< loudest_start_index << " end=" << loudest_end_index <<std::endl; 
 }
 
 Status TrimFile(const std::string& input_filename,
@@ -143,8 +149,8 @@ Status TrimFile(const std::string& input_filename,
 
   std::ofstream output_file(output_filename);
   output_file.write(output_wav_data.c_str(), output_wav_data.length());
-
-  std::cerr << "Saved to '" << output_filename << "'" << std::endl;
+  //std::cout << "Length = "<< trimmed_samples.size()<<std::endl;
+  //std::cerr << "Saved to '" << output_filename << "'" << std::endl;
 
   return Status::OK();
 }
@@ -156,6 +162,106 @@ void SplitFilename(const std::string& full_path, std::string* dir,
   *filename = full_path.substr(separator_index + 1);
 }
 
+bool isDirectory(const char* path)
+{
+  struct stat s;
+
+  stat(path, &s);
+  if (s.st_mode & S_IFDIR)
+    return true;
+  else
+    return false;
+}
+
+
+void ParsePath(const char* path, std::vector<std::string>& filelist, std::vector<std::string>& txtlist)
+{
+  DIR* dir;
+  struct dirent* ent;
+  char real_path[PATH_MAX];
+
+  if (realpath(path, real_path) == NULL) {
+    std::cerr << "invalid path: " << path << std::endl;
+    return;
+  }
+
+  if (!isDirectory(real_path)) {
+    if (strstr(path, ".wav") != nullptr) {
+      filelist.push_back(real_path);
+    }
+    if (strstr(path,".txt") != nullptr) {
+	    txtlist.push_back(real_path);
+    }
+    return;
+  }
+
+  if ((dir = opendir(real_path)) != NULL) {
+    /* print all the files and directories within directory */
+    while ((ent = readdir(dir)) != NULL) {
+      if (!strcmp(ent->d_name, ".") || !strcmp(ent->d_name, ".."))
+        continue;
+      std::string full_path = real_path;
+      full_path.append("/");
+      full_path.append(ent->d_name);
+      if (isDirectory(full_path.c_str()))
+        ParsePath(full_path.c_str(), filelist, txtlist);
+      else if (full_path.find(".wav") != std::string::npos)
+        filelist.push_back(full_path);
+      else if (full_path.find(".txt")!= std::string::npos)
+	      txtlist.push_back(full_path);
+    }
+    closedir(dir);
+  } else {
+    /* could not open directory */
+    perror("Could not open");
+    return;
+  }
+}
+
+void ParseDir(const char* path, std::set<std::string>& filelist)
+{
+  DIR* dir;
+  struct dirent* ent;
+  char real_path[PATH_MAX];
+
+  if (realpath(path, real_path) == NULL) {
+    std::cerr << "invalid path: " << path << std::endl;
+    return;
+  }
+  if ((dir = opendir(real_path)) != NULL) {
+    /* print all the files and directories within directory */
+    while ((ent = readdir(dir)) != NULL) {
+      if (!strcmp(ent->d_name, ".") || !strcmp(ent->d_name, ".."))
+        continue;
+      std::string full_path = real_path;
+      full_path.append("/");
+      full_path.append(ent->d_name);
+      if (isDirectory(full_path.c_str())) {
+	//std::cout<<"inserting directory = "<<full_path<<std::endl;
+	filelist.insert(full_path);
+        ParseDir(full_path.c_str(), filelist);
+      }
+    }
+    closedir(dir);
+  } else {
+    /* could not open directory */
+    perror("Could not open");
+    return;
+  }
+}
+
+std::string change_to_absolute_path(std::string p)
+{
+	char real_p[PATH_MAX];
+	if (realpath(p.c_str(), real_p) == NULL) {
+		std::cerr << "invalid path: " << p << std::endl;
+		return "";
+	}
+	std::string s = real_p;
+	return s;
+
+}
+
 int main(int argc, const char* argv[]) {
   if (argc < 3) {
     std::cerr
@@ -164,39 +270,55 @@ int main(int argc, const char* argv[]) {
     return -1;
   }
   const std::string input_glob = argv[1];
-  glob_t glob_result;
-  glob(input_glob.c_str(), GLOB_TILDE, nullptr, &glob_result);
-  std::vector<std::string> input_filenames;
-  for (int64_t i = 0; i < glob_result.gl_pathc; ++i) {
-    input_filenames.push_back(std::string(glob_result.gl_pathv[i]));
+  std::string real_in = change_to_absolute_path(input_glob);
+  if (real_in.compare("")==0 ) {
+	  std::cout << "Invalid path" << std::endl;
+	  return 0;
   }
-  globfree(&glob_result);
-
+  std::string in_dir_name;
+  std::string temp;
+  //std::string out_dir_name;
+  SplitFilename(real_in.c_str(),&temp,&in_dir_name );
+  std::cout<<"real_in = "<<real_in<<" in_dir_name = "<< in_dir_name<<std::endl;
+  std::string in_dir_name_slash = in_dir_name + "/";
+  std::vector<std::string> input_filenames;
+  std::vector<std::string> input_txt;
+  ParsePath(real_in.c_str(), input_filenames, input_txt);
   const std::string output_root = argv[2];
+  mkdir(output_root.c_str(), ACCESSPERMS);
+  std::string real_out = change_to_absolute_path(output_root);
+  if (real_out.compare("")==0) {
+	  std::cout << "Invalid path" << std::endl;
+	  return 0;
+  }
+ std::cout<<"real_out "<<real_out<<std::endl;
+ std::set<std::string> output_dirs;
+ ParseDir(real_in.c_str(), output_dirs);
   std::vector<std::string> output_filenames;
-  std::set<std::string> output_dirs;
+  int wav_count = 0;
   for (const std::string& input_filename : input_filenames) {
-    std::string input_dir;
-    std::string input_base;
-    SplitFilename(input_filename, &input_dir, &input_base);
-    std::string output_filename = output_root + "/" + input_base;
+    if (input_filename.find(".wav") != std::string::npos) {
+	    wav_count+=1;
+    }
+    size_t pos = input_filename.find(in_dir_name_slash);
+    std::string output_filename = real_out +"/"+ input_filename.substr(pos+in_dir_name_slash.length(), input_filename.length() - (pos+in_dir_name_slash.length()));
     output_filenames.push_back(output_filename);
-    std::string output_dir;
-    std::string output_base;
-    SplitFilename(output_filename, &output_dir, &output_base);
-    output_dirs.insert(output_dir);
   }
 
   for (const std::string& output_dir : output_dirs) {
-    mkdir(output_dir.c_str(), ACCESSPERMS);
+	size_t pos = output_dir.find(in_dir_name_slash);
+	//std::cout << "sub string = " << output_dir.substr(pos+in_dir_name_slash.length(), output_dir.length()-(pos+in_dir_name_slash.length())) << std::endl;
+        std::string d_name = real_out + "/" + output_dir.substr(pos+in_dir_name_slash.length(), output_dir.length()-(pos+in_dir_name_slash.length()));
+  //std::cout << "Making dir  = " << d_name << std::endl;
+    mkdir(d_name.c_str(), ACCESSPERMS);
   }
 
   assert(input_filenames.size() == output_filenames.size());
   for (int64_t i = 0; i < input_filenames.size(); ++i) {
     const std::string input_filename = input_filenames[i];
     const std::string output_filename = output_filenames[i];
-    const int64_t desired_length_ms = 1000;
-    const float min_volume = 0.004f;
+    const int64_t desired_length_ms = 3840; //orig. 1000
+    const float min_volume = 0.000001f;
     Status trim_status =
       TrimFile(input_filename, output_filename, desired_length_ms, min_volume);
     if (!trim_status.ok()) {
@@ -204,6 +326,18 @@ int main(int argc, const char* argv[]) {
                 << output_filename << "' with error " << trim_status;
     }
   }
+  for (int64_t i=0; i< input_txt.size(); i++) {
+	  size_t pos = input_txt[i].find(in_dir_name_slash);
+	   std::string output_filename = real_out +"/"+ input_txt[i].substr(pos+in_dir_name_slash.length(), input_txt[i].length() - (pos+in_dir_name_slash.length()));
+	   //copy code..
+	   std::ifstream  src(input_txt[i], std::ios::binary);
+    std::ofstream  dst(output_filename,std::ios::binary);
 
+    dst << src.rdbuf();
+    //std::cout<<"copied the file to "<<output_filename<<std::endl;
+  }
+  //std::cout<<"len of input filenames = "<<input_filenames.size()<<std::endl;
+  //std::cout << "len of inpyut dir = "<< output_dirs.size()<<std::endl;
+  //std::cout<<"wav_vount = "<<wav_count<<std::endl;
   return 0;
 }
