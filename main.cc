@@ -36,7 +36,6 @@
 class MemMappedFile {
  public:
   MemMappedFile(const std::string& filename) {
-    //std::cout<<"For file = "<<filename;
     const char* c_filename = filename.c_str();
     struct stat st;
     stat(c_filename, &st);
@@ -91,7 +90,6 @@ void TrimToLoudestSegment(const std::vector<float>& input,
   output->resize(desired_samples);
   std::copy(input.begin() + loudest_start_index,
             input.begin() + loudest_end_index, output->begin());
-  //std::cout<<"start = "<< loudest_start_index << " end=" << loudest_end_index <<std::endl; 
 }
 
 Status TrimFile(const std::string& input_filename,
@@ -149,8 +147,6 @@ Status TrimFile(const std::string& input_filename,
 
   std::ofstream output_file(output_filename);
   output_file.write(output_wav_data.c_str(), output_wav_data.length());
-  //std::cout << "Length = "<< trimmed_samples.size()<<std::endl;
-  //std::cerr << "Saved to '" << output_filename << "'" << std::endl;
 
   return Status::OK();
 }
@@ -237,7 +233,6 @@ void ParseDir(const char* path, std::set<std::string>& filelist)
       full_path.append("/");
       full_path.append(ent->d_name);
       if (isDirectory(full_path.c_str())) {
-	//std::cout<<"inserting directory = "<<full_path<<std::endl;
 	filelist.insert(full_path);
         ParseDir(full_path.c_str(), filelist);
       }
@@ -269,29 +264,60 @@ int main(int argc, const char* argv[]) {
         << std::endl;
     return -1;
   }
+  int l;
+  float v;
+  try{
+    std::string length_ms = argv[3];
+    l=std::stoi(length_ms);
+  }
+  catch(...){
+    std::cout << "Something wrong in argv[3].." << std::endl;
+    return -1;
+  }
+  try{
+    std::string min_v = argv[4];
+   v = std::stof(min_v);
+  }
+  catch(...){
+    std::cout << "Something wrong in argv[4].." << std::endl;
+    return -1;
+  }
+  // single wav file...
   const std::string input_glob = argv[1];
+  const std::string output_root = argv[2];
+  const std::string exte = ".wav";
+  if ((input_glob.find(exte)!=std::string::npos) && (output_root.find(exte)!=std::string::npos)) {
+	const int64_t desired_length_ms = (int64_t)l;//3840; //orig. 1000
+    	const float min_volume = v;//0.000001f;
+	Status trim_status =
+	      TrimFile(input_glob, output_root, desired_length_ms, min_volume);
+	if (!trim_status.ok()) {
+	      std::cerr << "Failed on '" << input_glob << "' => '"
+			<< output_root << "' with error " << trim_status;
+	}
+	return 0;
+  }
+  // directory as input...
   std::string real_in = change_to_absolute_path(input_glob);
   if (real_in.compare("")==0 ) {
 	  std::cout << "Invalid path" << std::endl;
-	  return 0;
+	  return -1;
   }
   std::string in_dir_name;
   std::string temp;
-  //std::string out_dir_name;
   SplitFilename(real_in.c_str(),&temp,&in_dir_name );
-  std::cout<<"real_in = "<<real_in<<" in_dir_name = "<< in_dir_name<<std::endl;
+  //std::cout<<"absolute path of inp_dir  = "<<real_in<<" inp_dir name = "<< in_dir_name<<std::endl;
   std::string in_dir_name_slash = in_dir_name + "/";
   std::vector<std::string> input_filenames;
   std::vector<std::string> input_txt;
   ParsePath(real_in.c_str(), input_filenames, input_txt);
-  const std::string output_root = argv[2];
   mkdir(output_root.c_str(), ACCESSPERMS);
   std::string real_out = change_to_absolute_path(output_root);
   if (real_out.compare("")==0) {
 	  std::cout << "Invalid path" << std::endl;
-	  return 0;
+	  return -1;
   }
- std::cout<<"real_out "<<real_out<<std::endl;
+ //std::cout<<"absolute path of out_dir = "<<real_out<<std::endl;
  std::set<std::string> output_dirs;
  ParseDir(real_in.c_str(), output_dirs);
   std::vector<std::string> output_filenames;
@@ -306,19 +332,16 @@ int main(int argc, const char* argv[]) {
   }
 
   for (const std::string& output_dir : output_dirs) {
-	size_t pos = output_dir.find(in_dir_name_slash);
-	//std::cout << "sub string = " << output_dir.substr(pos+in_dir_name_slash.length(), output_dir.length()-(pos+in_dir_name_slash.length())) << std::endl;
-        std::string d_name = real_out + "/" + output_dir.substr(pos+in_dir_name_slash.length(), output_dir.length()-(pos+in_dir_name_slash.length()));
-  //std::cout << "Making dir  = " << d_name << std::endl;
+    size_t pos = output_dir.find(in_dir_name_slash);
+    std::string d_name = real_out + "/" + output_dir.substr(pos+in_dir_name_slash.length(), output_dir.length()-(pos+in_dir_name_slash.length()));
     mkdir(d_name.c_str(), ACCESSPERMS);
   }
-
   assert(input_filenames.size() == output_filenames.size());
   for (int64_t i = 0; i < input_filenames.size(); ++i) {
     const std::string input_filename = input_filenames[i];
     const std::string output_filename = output_filenames[i];
-    const int64_t desired_length_ms = 3840; //orig. 1000
-    const float min_volume = 0.000001f;
+    const int64_t desired_length_ms = (int64_t)l;//3840; //orig. 1000
+    const float min_volume = v;//0.000001f;
     Status trim_status =
       TrimFile(input_filename, output_filename, desired_length_ms, min_volume);
     if (!trim_status.ok()) {
@@ -327,17 +350,11 @@ int main(int argc, const char* argv[]) {
     }
   }
   for (int64_t i=0; i< input_txt.size(); i++) {
-	  size_t pos = input_txt[i].find(in_dir_name_slash);
-	   std::string output_filename = real_out +"/"+ input_txt[i].substr(pos+in_dir_name_slash.length(), input_txt[i].length() - (pos+in_dir_name_slash.length()));
-	   //copy code..
-	   std::ifstream  src(input_txt[i], std::ios::binary);
+    size_t pos = input_txt[i].find(in_dir_name_slash);
+    std::string output_filename = real_out +"/"+ input_txt[i].substr(pos+in_dir_name_slash.length(), input_txt[i].length() - (pos+in_dir_name_slash.length()));
+    std::ifstream  src(input_txt[i], std::ios::binary);
     std::ofstream  dst(output_filename,std::ios::binary);
-
     dst << src.rdbuf();
-    //std::cout<<"copied the file to "<<output_filename<<std::endl;
   }
-  //std::cout<<"len of input filenames = "<<input_filenames.size()<<std::endl;
-  //std::cout << "len of inpyut dir = "<< output_dirs.size()<<std::endl;
-  //std::cout<<"wav_vount = "<<wav_count<<std::endl;
   return 0;
 }
